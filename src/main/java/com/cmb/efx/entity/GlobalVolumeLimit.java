@@ -20,12 +20,12 @@ public class GlobalVolumeLimit {
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
-    private double universalGlobalLimit;
-    private double usdLimit;
-    private double eurLimit;
-    private double gbpLimit;
+    private Double universalGlobalLimit;
+    private Double usdLimit;
+    private Double eurLimit;
+    private Double gbpLimit;
     @Column(nullable = true)
-    private double usedVolume;
+    private Double usedVolume;
     private String currencyType;
     private LocalDateTime startDate;
     private LocalDateTime endDate;

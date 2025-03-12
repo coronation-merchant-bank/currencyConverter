@@ -16,6 +16,11 @@ import org.springframework.data.domain.Sort;
 import org.springframework.data.jpa.domain.Specification;
 import org.springframework.stereotype.Service;
 
+import javax.sql.DataSource;
+import java.sql.CallableStatement;
+import java.sql.Connection;
+import java.sql.ResultSet;
+import java.sql.SQLException;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
@@ -30,6 +35,7 @@ public class VolumeService {
     private final VolumeRepository volumeRepository;
     private final TokenService tokenService;
     private final TransactionRepository transactionRepository;
+    private final DataSource dataSource;
 
     private static final String INVALID_TOKEN = "Invalid token";
     private static final String SUCCESS = "Success";
@@ -150,41 +156,46 @@ public class VolumeService {
                     .build();
         }
 
-        // Fetch the most recent approved record per currency
-        List<GlobalVolumeLimit> volumeLimits = volumeRepository.findAll().stream()
-                .filter(limit -> List.of("USD", "EUR", "GBP").contains(limit.getCurrencyType()))
-                .filter(limit -> limit.getAuthorizer() != null)
-                .filter(limit -> limit.getStatus().toString().equalsIgnoreCase("APPROVED"))
-                .filter(limit -> limit.getEndDate().isAfter(LocalDateTime.now()))
-                .filter(limit -> limit.getUsedFlag().equalsIgnoreCase("UNUSED"))
-                .sorted(Comparator.comparing(GlobalVolumeLimit::getApprovedDate).reversed()) // Sort by latest approval date
-                .collect(Collectors.toMap(
-                        GlobalVolumeLimit::getCurrencyType, // Group by currencyType
-                        limit -> limit,
-                        (existing, replacement) -> existing // Keep only the first (latest) record for each currency
-                ))
-                .values()
-                .stream()
-                .toList();
+        List<GlobalVolumeLimit> volumeLimits = new ArrayList<>();
+        List<VolumeLimitResponse> volumeLimitResponseList = new ArrayList<>();
+        try (Connection connection = dataSource.getConnection();
+             CallableStatement callableStatement = connection.prepareCall("{CALL CMB_FetchActiveLimit()}")) {
 
-
-        // Update "used" volume
-        List<VolumeLimitResponse> updatedVolumeLimits = volumeLimits.stream().map(limit -> {
-            double totalUsed = transactionRepository.findAll().stream()
-                    .filter(transaction -> transaction.getCurrency().equalsIgnoreCase(limit.getCurrencyType()))
-                    .filter(transaction -> transaction.getCreatedAt().isAfter(limit.getStartDate())
-                            && transaction.getCreatedAt().isBefore(limit.getEndDate()))
-                    .filter(transactions -> transactions.getTransactionType().equalsIgnoreCase("D"))
-                    .mapToDouble(Transactions::getAmount)
-                    .sum();
-
-            limit.setUsedVolume(totalUsed);
-            return Mapper.mapGlvToVolumeLimitResponse(limit);
-        }).toList();
+            boolean hasResults = callableStatement.execute();
+            if (hasResults) {
+                try (ResultSet resultSet = callableStatement.getResultSet()) {
+                    while (resultSet.next()) {
+                        GlobalVolumeLimit limit = new GlobalVolumeLimit();
+                        limit.setCurrencyType(resultSet.getString("currencyType"));
+                        limit.setAuthorizer(resultSet.getString("authorizer"));
+                        limit.setStatus(Status.valueOf(resultSet.getString("status")));
+                        limit.setEndDate(resultSet.getTimestamp("endDate").toLocalDateTime());
+                        limit.setUsedFlag(resultSet.getString("usedFlag"));
+                        limit.setApprovedDate(resultSet.getTimestamp("approvedDate").toLocalDateTime());
+                        limit.setStartDate(resultSet.getTimestamp("startDate").toLocalDateTime());
+                        limit.setUsedVolume(resultSet.getDouble("usedVolume"));
+                        limit.setCurrencyType(resultSet.getString("currencyType"));
+                        limit.setCreatedAt(resultSet.getTimestamp("createdAt").toLocalDateTime());
+                        limit.setModifiedAt(resultSet.getTimestamp("modifiedAt").toLocalDateTime());
+                        limit.setInitiator(resultSet.getString("initiator"));
+                        limit.setAuthorizer(resultSet.getString("authorizer"));
+                        limit.setRejectDate(resultSet.getTimestamp("rejectDate").toLocalDateTime());
+                        limit.setUsedFlag(resultSet.getString("usedFlag"));
+                        // Set other fields as necessary
+                        volumeLimits.add(limit);
+                    }
+                }
+            }
+            volumeLimitResponseList = volumeLimits.stream().map(Mapper::mapGlvToVolumeLimitResponse).toList();
+        } catch (SQLException e) {
+            return Response.builder()
+                    .responseMessage("Error executing stored procedure")
+                    .build();
+        }
 
         return Response.builder()
                 .responseMessage(SUCCESS)
-                .volumeLimitList(updatedVolumeLimits)
+                .volumeLimitList(volumeLimitResponseList)
                 .build();
     }
 
