@@ -1,0 +1,19 @@
+package com.cmb.efx.dto;
+
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+
+@Data
+@AllArgsConstructor
+@NoArgsConstructor
+@Builder
+public class Records {
+    private AccountId acctId;
+    private String creditDebitFlg;
+    private TrnAmt trnAmt;
+    private int serialNum;
+    private String trnParticulars;
+    private String tranRemarks;
+}
