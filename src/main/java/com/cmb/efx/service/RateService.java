@@ -16,8 +16,14 @@ import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import javax.sql.DataSource;
+import java.sql.CallableStatement;
+import java.sql.Connection;
+import java.sql.ResultSet;
+import java.sql.SQLException;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 
@@ -28,6 +34,7 @@ public class RateService {
     private final RateRepository rateRepository;
     private final TokenService tokenService;
     private static final String INVALID_TOKEN = "Invalid Token";
+    private final DataSource dataSource;
 
     public Response createRate(CreateRateRequest request, String token){
         if (tokenService.validateToken(token)){
@@ -94,15 +101,46 @@ public class RateService {
                     .responseMessage("Invalid Token")
                     .build();
         }
-        Optional<Rates> existingRate = rateRepository.findById(rateId);
-        if (existingRate.isEmpty()){
+        Rates rate = new Rates();
+        try (Connection connection = dataSource.getConnection();
+             CallableStatement callableStatement = connection.prepareCall("{CALL CMB_FetchRatesByID(?)}")) {
+
+            callableStatement.setLong(1, rateId);
+            ResultSet resultSet = callableStatement.executeQuery();
+
+            if (!resultSet.next()) {
+                return Response.builder()
+                        .responseMessage("Rate with id " + rateId + " does not exist")
+                        .build();
+            }
+
+            rate.setId(resultSet.getLong("id"));
+            rate.setId(resultSet.getLong("id"));
+            rate.setUsdBid(resultSet.getDouble("usdBid"));
+            rate.setGbpBid(resultSet.getDouble("gbpBid"));
+            rate.setEurBid(resultSet.getDouble("eurBid"));
+            rate.setUsdOffer(resultSet.getDouble("usdOffer"));
+            rate.setGbpOffer(resultSet.getDouble("gbpOffer"));
+            rate.setEurOffer(resultSet.getDouble("eurOffer"));
+            rate.setStatus(Status.valueOf(resultSet.getString("status")));
+            rate.setInitiator(resultSet.getString("initiator"));
+            rate.setAuthorizer(resultSet.getString("Authorizer"));
+            rate.setCreatedAt(resultSet.getTimestamp("createdAt").toLocalDateTime());
+            rate.setUpdatedAt(resultSet.getTimestamp("updatedAt").toLocalDateTime());
+            rate.setApproveDate(resultSet.getTimestamp("approveDate").toLocalDateTime());
+            rate.setRejectDate(resultSet.getTimestamp("rejectDate").toLocalDateTime());
+
+
+
+        } catch (SQLException e) {
+            e.printStackTrace();
             return Response.builder()
-                    .responseMessage("Rate with id " + rateId + " does not exist")
+                    .responseMessage("Error fetching rate")
                     .build();
         }
         return Response.builder()
                 .responseMessage("Success")
-                .rate(existingRate.get())
+                .rate(rate)
                 .build();
     }
 
@@ -148,17 +186,49 @@ public class RateService {
                     .responseMessage("Invalid Token")
                     .build();
         }
-        List<Rates> approvedRates = rateRepository.findByStatus(Status.APPROVED);
-        if (approvedRates.isEmpty()){
+        Rates currentRate = null;
+        List<Rates> ratesList = new ArrayList<>();
+        try (Connection connection = dataSource.getConnection();
+             CallableStatement callableStatement = connection.prepareCall("{CALL CMB_FetchActiveRate()}")) {
+
+            boolean hasResults = callableStatement.execute();
+            if (hasResults) {
+                try (ResultSet resultSet = callableStatement.getResultSet()) {
+                    if (resultSet.next()) {
+                        currentRate = new Rates();
+                        currentRate.setId(resultSet.getLong("id"));
+                        currentRate.setUsdBid(resultSet.getDouble("usdBid"));
+                        currentRate.setGbpBid(resultSet.getDouble("gbpBid"));
+                        currentRate.setEurBid(resultSet.getDouble("eurBid"));
+                        currentRate.setUsdOffer(resultSet.getDouble("usdOffer"));
+                        currentRate.setGbpOffer(resultSet.getDouble("gbpOffer"));
+                        currentRate.setEurOffer(resultSet.getDouble("eurOffer"));
+                        currentRate.setStatus(Status.valueOf(resultSet.getString("status")));
+                        currentRate.setInitiator(resultSet.getString("initiator"));
+                        currentRate.setAuthorizer(resultSet.getString("Authorizer"));
+                        currentRate.setCreatedAt(resultSet.getTimestamp("createdAt").toLocalDateTime());
+                        currentRate.setUpdatedAt(resultSet.getTimestamp("updatedAt").toLocalDateTime());
+                        currentRate.setApproveDate(resultSet.getTimestamp("approveDate").toLocalDateTime());
+                        currentRate.setRejectDate(resultSet.getTimestamp("rejectDate").toLocalDateTime());
+                        ratesList.add(currentRate);
+                    }
+                }
+            }
+        } catch (SQLException e) {
+            return Response.builder()
+                    .responseMessage("Error executing stored procedure")
+                    .build();
+        }
+        if (ratesList.isEmpty()){
             return Response.builder()
                     .responseMessage("there's no current rate in use")
                     .build();
         }
-        Rates currentRate = approvedRates.getLast();
+        Rates activeRate = ratesList.getLast();
 
         return Response.builder()
                 .responseMessage("Success")
-                .rate(currentRate)
+                .rate(activeRate)
                 .build();
     }
 

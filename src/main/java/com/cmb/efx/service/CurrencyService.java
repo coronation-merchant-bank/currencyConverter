@@ -16,6 +16,11 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 
+import javax.sql.DataSource;
+import java.sql.CallableStatement;
+import java.sql.Connection;
+import java.sql.ResultSet;
+import java.sql.SQLException;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
@@ -41,6 +46,8 @@ public class CurrencyService {
 
     private final VolumeService volumeService;
 
+    private final DataSource dataSource;
+
     @Value("${USD-GL}")
     private String usdGlAccount;
 
@@ -62,24 +69,37 @@ private static final String INVALID_TOKEN = "Invalid token";
                     .responseMessage(INVALID_TOKEN)
                     .build();
         }
-        Optional<Currency> currency = currencyRepository.findByCurrencyName(request.getCurrencyName());
-        if (currency.isPresent()){
+        try (Connection connection = dataSource.getConnection();
+             CallableStatement callableStatement = connection.prepareCall("{CALL CMB_AddCurrency(?, ?, ?, ?, ?)}")) {
+
+            callableStatement.setString(1, request.getCountry());
+            callableStatement.setString(2, request.getCurrencyName());
+            callableStatement.setString(3, request.getCurrencySymbol());
+
+            int rowsAffected = callableStatement.executeUpdate();
+
+            if (rowsAffected == 0) {
+                return Response.builder()
+                        .responseMessage("Attempt to save duplicate currency")
+                        .build();
+            }
+
+            Currency newCurrency = new Currency();
+            newCurrency.setCurrencyName(request.getCurrencyName());
+            newCurrency.setCurrencySymbol(request.getCurrencySymbol());
+            newCurrency.setCountry(request.getCountry());
+
             return Response.builder()
-                    .responseMessage("Attempt to save duplicate currency")
+                    .responseMessage("Success")
+                    .currency(mapCurrencyToDto(newCurrency))
+                    .build();
+
+        } catch (SQLException e) {
+            e.printStackTrace();
+            return Response.builder()
+                    .responseMessage("Error adding currency")
                     .build();
         }
-
-
-        Currency newCurrency = new Currency();
-        newCurrency.setCurrencyName(request.getCurrencyName());
-        newCurrency.setCurrencySymbol(request.getCurrencySymbol());
-        newCurrency.setCountry(request.getCountry());
-
-        Currency savedCurrency = currencyRepository.save(newCurrency);
-        return Response.builder()
-                .responseMessage("Success")
-                .currency(mapCurrencyToDto(savedCurrency))
-                .build();
     }
 
     public Response fetchAllCurrencies(String token){
@@ -88,8 +108,32 @@ private static final String INVALID_TOKEN = "Invalid token";
                     .responseMessage("Invalid Token")
                     .build();
         }
-        List<CurrencyRequest> currencies = currencyRepository.findAll()
-                .stream().map(Mapper::mapCurrencyToDto).toList();
+        List<CurrencyRequest> currencies = new ArrayList<>();
+        try (Connection connection = dataSource.getConnection();
+             CallableStatement callableStatement = connection.prepareCall("{CALL CMB_ViewAllCurrency()}")) {
+
+            boolean hasResults = callableStatement.execute();
+            if (hasResults) {
+                try (ResultSet resultSet = callableStatement.getResultSet()) {
+                    while (resultSet.next()) {
+                        while (resultSet.next()) {
+                            Currency currency = new Currency();
+                            currency.setId(resultSet.getInt("id"));
+                            currency.setCurrencyName(resultSet.getString("currency_name"));
+                            currency.setCurrencySymbol(resultSet.getString("currency_symbol"));
+                            currency.setCountry(resultSet.getString("country"));
+
+                            CurrencyRequest currencyRequest = Mapper.mapCurrencyToDto(currency);
+                            currencies.add(currencyRequest);
+                        }
+                    }
+                }
+            }
+        } catch (SQLException e) {
+            return Response.builder()
+                    .responseMessage("Error executing stored procedure")
+                    .build();
+        }
         return Response.builder()
                 .responseMessage("Success")
                 .currencyList(currencies)
